@@ -47,7 +47,9 @@ executables:
     - -main-is Hello
     dependencies:
     - menu
+    - vector
     - gi-gtk 
+    - gi-gdk
     - gi-gtk-declarative
     - gi-gtk-declarative-app-simple
     - text
