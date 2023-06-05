@@ -157,13 +157,31 @@ ifElseP :: Parser Statement
 ifElseP = (doIfElse <$ strP "if") <*> withParentheses boolExprP <*> statementP <* manySpacesP <* strP "else" <* manySpacesP <*> statementP
 
 boolExprP :: Parser BoolExpr
-boolExprP = hasBallP <|> checkDirP
+boolExprP = hasBallP <|> checkDirP <|> comparisonP
 
 hasBallP :: Parser BoolExpr
 hasBallP = fmap hasBall $ strP "hayBolitas" *> withParentheses colourP
 
 checkDirP :: Parser BoolExpr
 checkDirP = fmap checkDir $ strP "puedeMover" *> withParentheses directionP
+
+comparisonP :: Parser BoolExpr
+comparisonP = comparison <$> intExprP <*> boolOperandP <*> intExprP
+
+boolOperandP :: Parser BoolOperand
+boolOperandP = manySpacesP *> (lessThanOrEqualToP <|> lessThanP <|> greaterThanOrEqualToP <|> greaterThanP) <* manySpacesP
+
+greaterThanP :: Parser BoolOperand
+greaterThanP = (>) <$ charP '>'
+
+greaterThanOrEqualToP :: Parser BoolOperand
+greaterThanOrEqualToP = (>=) <$ strP ">="
+
+lessThanP :: Parser BoolOperand
+lessThanP = (<) <$ charP '<'
+
+lessThanOrEqualToP :: Parser BoolOperand
+lessThanOrEqualToP = (<=) <$ strP "<="
 
 whileP :: Parser Statement
 whileP = (while <$ strP "while") <*> withParentheses boolExprP <*> statementP
