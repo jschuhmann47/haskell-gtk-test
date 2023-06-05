@@ -1,0 +1,12 @@
+program {
+    Poner(Negro)
+    Poner(Negro)
+    Poner(Azul)
+    Mover(Norte)
+    Mover(Norte)
+    Poner(Negro)
+    Poner(Rojo)
+    Poner(Azul)
+    Mover(Este)
+    Poner(Verde)
+}

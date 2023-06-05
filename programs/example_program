@@ -1,0 +1,24 @@
+program {
+    Mover(Norte)
+    Poner(Negro)
+    Poner(Negro)
+    Poner(Azul)
+    Mover(Norte)
+    repeat(15){
+        Poner(Rojo)
+        Poner(Azul)
+    }
+    if (hayBolitas(Verde)){
+        Mover(Este)
+        Poner(Negro)
+    } else {
+        Mover(Sur)
+        Mover(Este)
+        Poner(Azul)
+    }
+    Mover(Este)
+    while (nroBolitas(Verde) <= 9){
+        Poner(Verde)
+    }
+    Poner(Azul)
+}
