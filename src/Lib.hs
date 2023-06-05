@@ -9,6 +9,7 @@ data Board = Board
     { cells :: [Cell]
     , currentCell :: Int
     , dimensions :: Int
+    , previous :: Maybe Board
     } deriving (Eq, Show)
 
 data Cell = Cell
@@ -25,7 +26,7 @@ type Statement = Board -> Either String Board
 
 type BoolExpr = Board -> Bool
 type IntExpr = Board -> Int
-type Program = Board -> Either String Board
+type Program = Statement
 
 width :: Board -> Int
 width = dimensions
@@ -36,24 +37,35 @@ emptyCell :: Cell
 emptyCell = Cell 0 0 0 0
 
 newBoard :: Int -> Board
-newBoard n = Board (replicate (n ^ 2) emptyCell) 0 n
+newBoard n = Board (replicate (n ^ 2) emptyCell) 0 n Nothing
+
+allBoardStates :: Board -> [Board]
+allBoardStates board = case previous board of
+    Nothing -> []
+    Just previousBoard -> allBoardStates previousBoard ++ [board]
+
+-- checkDir :: Direction -> BoolExpr
+-- checkDir East (Board _ currentCell dimensions) = mod currentCell dimensions /= dimensions - 1
+-- checkDir West (Board _ currentCell dimensions) = mod currentCell dimensions /= 0
+-- checkDir North (Board _ currentCell dimensions) = currentCell + dimensions < dimensions ^ 2
+-- checkDir South (Board _ currentCell dimensions) = currentCell - dimensions >= 0
+
+currentCoordinate :: Board -> (Int, Int)
+currentCoordinate board = currentCell board `quotRem` dimensions board
+
+isValidPosition :: BoolExpr
+isValidPosition board =
+    fst (currentCoordinate board) <= width board &&
+    snd (currentCoordinate board) <= height board
 
 checkDir :: Direction -> BoolExpr
-checkDir East (Board _ currentCell dimensions) = mod currentCell dimensions /= dimensions - 1
-checkDir West (Board _ currentCell dimensions) = mod currentCell dimensions /= 0
-checkDir North (Board _ currentCell dimensions) = currentCell + dimensions < dimensions ^ 2
-checkDir South (Board _ currentCell dimensions) = currentCell - dimensions >= 0
+checkDir direction = isValidPosition . moveTowards direction
 
 moveTowards :: Direction -> Board -> Board
-moveTowards South (Board cells currentCell dimensions) = Board cells (currentCell - dimensions) dimensions
-moveTowards North (Board cells currentCell dimensions) = Board cells (currentCell + dimensions) dimensions
-moveTowards East (Board cells currentCell dimensions) = Board cells (currentCell + 1) dimensions
-moveTowards West (Board cells currentCell dimensions) = Board cells (currentCell - 1) dimensions
-
-moveStatement :: Direction -> Statement
-moveStatement direction board
-    | checkDir direction board = Right $ moveTowards direction board
-    | otherwise = Left "error: current cell is outside of the board"
+moveTowards South board = board { currentCell = currentCell board - width board }
+moveTowards North board = board { currentCell = currentCell board + width board }
+moveTowards East board = board { currentCell = currentCell board + 1 }
+moveTowards West board = board { currentCell = currentCell board - 1 }
 
 addInCell :: Colour -> Cell -> Cell
 addInCell Red cell = cell { red = red cell + 1 }
@@ -67,15 +79,32 @@ removeInCell Blue cell = cell { blue = blue cell - 1 }
 removeInCell Green cell = cell { green = green cell - 1 }
 removeInCell Black cell = cell { black = black cell - 1 }
 
-modifyIndexedCell :: Int -> (Cell -> Cell) -> [Cell] -> [Cell]
-modifyIndexedCell n f = map (\(x, c) -> if x == n then f c else c) . zip [0..]
+modifyIndexedCell :: Int -> (Cell -> Cell) -> Board -> Board
+modifyIndexedCell idx f board =
+    board { cells = modifyIndexed idx f (cells board) }
+
+modifyCurrentCell :: (Cell -> Cell) -> Board -> Board
+modifyCurrentCell f board =
+    modifyIndexedCell (currentCell board) f board
+
+modifyIndexed :: Int -> (a -> a) -> [a] -> [a]
+modifyIndexed expectedIdx f =
+    map (\(idx, value) -> if idx == expectedIdx then f value else value) . zip [0..]
+
+-- newFrom :: Board -> Board
+
+moveStatement :: Direction -> Statement
+moveStatement direction board
+    | isValidPosition (moveTowards direction board) = Right $ (moveTowards direction board) { previous = Just board }
+    | otherwise = Left "error: current cell is outside of the board"
 
 addInBoard :: Colour -> Statement
-addInBoard colour (Board cells currentCell dimensions) = Right $ Board (modifyIndexedCell currentCell (addInCell colour) cells) currentCell dimensions
+addInBoard colour board =
+    Right $ (modifyCurrentCell (addInCell colour) board) { previous = Just board }
 
 removeInBoard :: Colour -> Statement
-removeInBoard colour board@(Board cells currentCell dimensions)
-    | numberOfBalls colour board > 0 = Right $ Board (modifyIndexedCell currentCell (removeInCell colour) cells) currentCell dimensions
+removeInBoard colour board
+    | numberOfBalls colour board > 0 = Right $ (modifyCurrentCell (removeInCell colour) board) { previous = Just board }
     | otherwise = Left $ "error: no balls coloured " ++ show colour ++ " to take from current cell"
 
 repeat :: IntExpr -> Statement -> Statement

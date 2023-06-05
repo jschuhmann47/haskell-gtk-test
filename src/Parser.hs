@@ -1,13 +1,51 @@
+{-# HLINT ignore "Use newtype instead of data" #-}
+{-# LANGUAGE InstanceSigs #-}
 module Parser where
 import Control.Applicative
 import Data.Char
 import Lib
 import Control.Monad
 import Data.Either (fromRight)
+import Data.List (stripPrefix, isPrefixOf, isSuffixOf)
+import Data.Maybe (fromMaybe)
 
-newtype Parser a = Parser {
+data Parser a = Parser {
     runParser :: String -> Maybe (String, a)
 }
+
+parseString :: String -> Parser String
+parseString expected = Parser $ \input -> case stripPrefix expected input of
+    Just restOfText -> Just (restOfText, expected)
+    Nothing -> Nothing
+
+parserRojo :: Parser Colour
+parserRojo = (\_ -> Red) <$> parseString "Rojo"
+
+(>>>) :: Parser a -> Parser b -> (a -> b -> c) -> Parser c
+(parserA >>> parserB) f = Parser $ \input ->
+    do
+        (resto, algo) <- runParser parserA input
+        (resto', otroAlgo) <- runParser parserB resto
+        pure (resto', f algo otroAlgo)
+
+(>-->) :: Parser a -> Parser b -> Parser b
+parserA >--> parserB = (parserA >>> parserB) (\_ b -> b)
+
+-- parserColor :: String -> Maybe (String, Colour)
+-- parserColor input
+--     | isPrefixOf "Rojo" input = Just (fromMaybe "" $ stripPrefix "Rojo" input, Red)
+-- -- parserColor "Verde" = Just Green
+-- -- parserColor "Azul" = Just Blue
+-- -- parserColor "Negro" = Just Black
+-- parserColor _ = Nothing
+
+--Poner(Rojo) --> addInBoard Red
+
+-- parserPoner :: String -> Maybe Statement
+-- parserPoner input
+--     | isPrefixOf "Poner(" input && isSuffixOf ")" input =
+--         fmap addInBoard . parserColor . fromMaybe "" . stripSuffix ")" . fromMaybe "" . stripPrefix "Poner(" $ input
+--     | otherwise = Nothing
 
 instance Functor Parser where
     fmap function parser = do
@@ -15,6 +53,7 @@ instance Functor Parser where
         pure $ function value
 
 instance Applicative Parser where
+    pure :: a -> Parser a
     pure x = Parser $ \input -> return (input, x)
     p1 <*> p2 = do
         resultFunction <- p1
@@ -36,8 +75,11 @@ charP char = conditionP (== char)
 strP :: String -> Parser String
 strP = traverse charP
 
+ascii0 :: Int
+ascii0 = 48
+
 digitP :: Parser Int
-digitP = subtract 48 . ord <$> conditionP isDigit
+digitP = subtract ascii0 . ord <$> conditionP isDigit
 
 spaceP :: Parser Char
 spaceP = conditionP isSpace
