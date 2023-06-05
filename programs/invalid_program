@@ -1,0 +1,6 @@
+program {
+    Poner(Azul)
+    Mover(Norte)
+    Poner(Amarillo)
+    Mover(Diagonal)
+}
