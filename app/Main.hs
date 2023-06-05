@@ -31,6 +31,12 @@ import qualified Data.Text as Text
 import Data.Maybe (fromMaybe)
 import Parser
 import qualified GI.Gtk.Declarative.Container.Grid as Grid
+import Debug.Trace
+import GHC.Int (Int32)
+import Control.Monad (forM_)
+import qualified Pipes.Extras as Pipes
+import Pipes ((>->))
+import Control.Concurrent
 
 fileNameLabel :: State -> Widget event
 fileNameLabel state = case gobstonesProgram state of
@@ -38,19 +44,22 @@ fileNameLabel state = case gobstonesProgram state of
                 Label
                 [#label := maybe "Cargá un programa de gobstones." pack filePath]
   Ready sourceCode -> widget Label [#label := pack sourceCode]
+  Running _ -> widget Label []
 
 data State =
   State { board :: Board, gobstonesProgram :: GobstonesProgram }
 
 data GobstonesProgram =
   NotLoaded { filePath :: Maybe String } |
-  Ready { sourceCode :: String }
+  Ready { sourceCode :: String } |
+  Running { boardStates :: [Board] }
 
 data Event =
   Closed |
   FileSelectionChanged (Maybe FilePath) |
   RunProgram |
-  GobstonesProgramLoaded String
+  GobstonesProgramLoaded String |
+  RunStep
 
 view' :: State -> AppView Window Event
 view' state =
@@ -61,10 +70,13 @@ view' state =
       ]
     $ paned [#wideHandle := True]
             (pane defaultPaneProperties { resize = True, shrink = False} $ loadProgramWidget state)
-            (pane defaultPaneProperties { resize = False, shrink = False} boardGrid)
+            (pane defaultPaneProperties { resize = True, shrink = False} boardGrid)
         where boardGrid = toGrid (fromIntegral . Lib.height . board $ state)
-                                            [#rowSpacing := 75, #columnSpacing := 75, classes ["window"]]
-                                            (map ballsCount . cells . board $ state)
+                                            [#columnHomogeneous := True, #rowHomogeneous := True]
+                                            (mapWithIndex (viewCell $ board state) . cells . board $ state)
+
+mapWithIndex :: (Int -> a -> b) -> [a] -> [b]
+mapWithIndex f = zipWith f [0..]
 
 loadProgramWidget :: State -> Widget Event
 loadProgramWidget state = container Box [#orientation := Gtk.OrientationVertical]
@@ -84,24 +96,34 @@ loadProgramWidget state = container Box [#orientation := Gtk.OrientationVertical
           ]
 
 toGrid :: GHC.Int.Int32 -> Vector (Attribute Grid event) -> [Widget event] -> Widget event
-toGrid columns gridProperties widgets = let rows = div (fromIntegral . length $ widgets) columns in
-  container Grid gridProperties    
-    (
-        Vector.fromList [GridChild {
+toGrid columns gridProperties widgets =
+  let (rows, lastRowColumns) = quotRem (fromIntegral . length $ widgets) columns
+      positions  :: Vector (Int32, Int32)
+      positions = do
+        row <- [0..rows-1]
+        column <- [0..columns-1]
+        pure (row, column)
+        <> do
+        column <- [0..lastRowColumns-1]
+        pure (rows, column)
+    in
+  container Grid gridProperties $
+    (\(row, column) -> GridChild {
         properties = defaultGridChildProperties {
           leftAttach = column,
           topAttach = row
         }, child = reverse widgets !! fromIntegral (row * columns + column)
-      } | column <- [0..columns-1], row <- [0..rows-1]]
-    )
+      }) <$> positions
 
-ballsCount :: Cell -> Widget event
-ballsCount cell =
-  toGrid 2 [] . map (\(name, amount) -> ballWithText name (show . amount $ cell)) $ [
+viewCell :: Board -> Int -> Cell -> Widget event
+viewCell board idx cell =
+  toGrid 2 [classes $ "ballsCell" : ["currentCell" | currentCell board == idx]] .
+  map (\(name, amount) -> ballWithText name (show . amount $ cell)) .
+  filter (\(_, amount) -> amount cell > 0) $ [
     ("black", black),
-    ("blue", blue),
     ("red", red),
-    ("green", green)
+    ("green", green),
+    ("blue", blue)
   ]
 
 setFilePath :: Maybe String -> State -> State
@@ -121,38 +143,50 @@ update' state (FileSelectionChanged fileName) =
 update' state (GobstonesProgramLoaded programSourceCode) =
   Transition (state { gobstonesProgram = Ready programSourceCode })
              (pure Nothing)
-update' state RunProgram =
-  Transition (state { board = resultingBoard }) (pure Nothing)
-  where maybeProgram = case gobstonesProgram state of
-          NotLoaded _ -> Nothing
-          Ready sourceCode -> parsearPrograma sourceCode
-        resultingBoard = case maybeProgram of
-          Just program -> case program (board state) of
-            Left _ -> board state
-            Right newBoard -> newBoard
-          Nothing -> board state
+update' state RunProgram = let maybeProgram = case gobstonesProgram state of
+                                      NotLoaded _ -> Nothing
+                                      Ready sourceCode -> parsearPrograma sourceCode
+                               boardStates = case maybeProgram of
+                                      Just program -> case program (board state) of
+                                        Left _ -> []
+                                        Right newBoard -> allBoardStates newBoard
+                                      Nothing -> []
+                            in
+  Transition (state { gobstonesProgram = Running boardStates }) (pure . Just $ RunStep)
+update' state RunStep = Transition (case gobstonesProgram state of
+                          Running (nextBoard : rest) -> state {
+                            board = nextBoard,
+                            gobstonesProgram = Running rest
+                          }
+                          _ -> state) (
+                            case gobstonesProgram state of
+                              Running (_:_) -> threadDelay 1000000 >> pure (Just RunStep)
+                              _ -> pure Nothing
+                          )
+
 
 -- update' state ButtonClicked = _wd
-
 styles = mconcat [
-  ".window {",
-  "background-size: 145px 140px; ",
-  "background-image: url('assets/cell.png');",
+  ".ballsCell {",
+  "background-size: 100% 100%; ",
+  "padding: 30px; ",
+  "font-size: 30px; ",
+  "border: 5px inset black; ",
+  "background-color: white; ",
   "}",
   "\n",
-  ".ball {",
-  "background-image: url('assets/red.png'); ",
-  "background-size: 32px; ",
+  ".currentCell {",
+  "background-color: rgb(173,216,230); ",
   " }"
   ]
 
 ballWithText :: String -> String -> Widget event
-ballWithText color quantity = container Box [] [
-    BoxChild defaultBoxChildProperties $
+ballWithText color quantity = container Box [#homogeneous := True] [
+    BoxChild defaultBoxChildProperties { expand = True, fill = True } $
       widget GtkImage.Image [
         #file := fromString ("assets/" <> color <> ".png")
       ],
-    BoxChild defaultBoxChildProperties $ widget Gtk.Label [
+    BoxChild defaultBoxChildProperties { expand = True, fill = True } $ widget Gtk.Label [
       #label := pack quantity
     ]
   ]
@@ -171,7 +205,7 @@ main = do
                       , update       = update'
                       , inputs       = []
                       , initialState = State {
-                          board = newBoard 3, 
+                          board = newBoard 3,
                           gobstonesProgram = NotLoaded { filePath = Nothing }
                         }
                       }
