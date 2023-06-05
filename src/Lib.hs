@@ -1,6 +1,5 @@
 module Lib where
 import Prelude
-import Data.Bifoldable
 
 chain :: [Statement] -> Statement
 chain instructions board = foldl (>>=) (return board) instructions
@@ -27,6 +26,7 @@ type Statement = Board -> Either (String, Board) Board
 type BoolExpr = Board -> Bool
 type IntExpr = Board -> Int
 type Program = Statement
+type BoolOperand = Int -> Int -> Bool
 
 width :: Board -> Int
 width = dimensions
@@ -136,6 +136,9 @@ moveToBorder dir = while (checkDir dir) (moveStatement dir)
 hasBall :: Colour -> BoolExpr
 hasBall colour = (> 0) . numberOfBalls colour
 
+comparison :: IntExpr -> BoolOperand -> IntExpr -> BoolExpr
+comparison intExpr1 compareF intExpr2 board = compareF (intExpr1 board) (intExpr2 board)
+
 numberOfBalls :: Colour -> IntExpr
 numberOfBalls colour = numberOfBallsOfColorInCell colour . getCurrentCell
 
@@ -170,7 +173,7 @@ aProgram = program $ chain [ moveStatement North
         , addInBoard Blue
         ])
     , moveStatement East
-    , while ((<= 9) . numberOfBalls Green)
+    , while (comparison (numberOfBalls Green) (<=) (const 9))
         (addInBoard Green)
     , addInBoard Blue
     ]
