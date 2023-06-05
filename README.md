@@ -1,3 +1,3 @@
-# Haskell GTK test
+# Implementación de gobstones en haskell
 
-Ejemplo extraído de [este repo](https://github.com/owickstrom/gi-gtk-declarative/blob/master/examples)
+
