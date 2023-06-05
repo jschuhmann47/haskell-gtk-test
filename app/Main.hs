@@ -2,64 +2,55 @@
 {-# LANGUAGE OverloadedLists   #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
-module Hello where
+module Main where
 
-import           Control.Monad                  ( void )
-import           Data.Text                      ( pack )
+import Control.Monad ( void )
+import           Data.Text                      (Text, pack, unpack )
+import qualified GI.GObject                    as GI
+import qualified GI.Gtk.Objects.Widget as Gtk
 import           GI.Gtk                         ( Button(..)
                                                 , Grid(..)
                                                 , Label(..)
                                                 , Window(..)
-                                                , Overlay(..), ListBox (..), Box (..)
+                                                , Box (..), textBufferNew
 
                                                 )
 import           GI.Gtk.Declarative
 import           GI.Gtk.Declarative.App.Simple
 import           GI.Gtk.Declarative.Container.Grid
-import qualified Data.Vector as Vector
 import           GI.Gtk.Objects.Image as GtkImage
-import GHC.IO.Unsafe (unsafePerformIO)
-import qualified GHC.Int
 import Data.String (fromString)
 import Lib
 import qualified GI.Gtk as Gtk
 import qualified GI.Gdk as Gdk
-import GHC.Exts (Item)
 import Data.Vector (Vector)
-import qualified Data.Text as Text
-import Data.Maybe (fromMaybe)
 import Parser
-import qualified GI.Gtk.Declarative.Container.Grid as Grid
-import Debug.Trace
 import GHC.Int (Int32)
-import Control.Monad (forM_)
-import qualified Pipes.Extras as Pipes
-import Pipes ((>->))
 import Control.Concurrent
-
-fileNameLabel :: State -> Widget event
-fileNameLabel state = case gobstonesProgram state of
-  NotLoaded filePath -> widget
-                Label
-                [#label := maybe "Cargá un programa de gobstones." pack filePath]
-  Ready sourceCode -> widget Label [#label := pack sourceCode]
-  Running _ -> widget Label []
+import GI.Gtk.Declarative.EventSource (Subscription, fromCancellation)
 
 data State =
-  State { board :: Board, gobstonesProgram :: GobstonesProgram }
+  State { board :: Board, code :: String, gobstonesProgram :: GobstonesProgram }
 
 data GobstonesProgram =
   NotLoaded { filePath :: Maybe String } |
   Ready { sourceCode :: String } |
-  Running { boardStates :: [Board] }
+  Running { boardStates :: [Board], executionResult :: ExecutionResult } |
+  ParseFailed
+
+data ExecutionResult = Success | Failure { errorMessage :: String }
 
 data Event =
   Closed |
   FileSelectionChanged (Maybe FilePath) |
   RunProgram |
   GobstonesProgramLoaded String |
-  RunStep
+  RunStep |
+  CodeChanged String |
+  BackToNotLoaded |
+  ResetBoard
 
 view' :: State -> AppView Window Event
 view' state =
@@ -70,30 +61,61 @@ view' state =
       ]
     $ paned [#wideHandle := True]
             (pane defaultPaneProperties { resize = True, shrink = False} $ loadProgramWidget state)
-            (pane defaultPaneProperties { resize = True, shrink = False} boardGrid)
-        where boardGrid = toGrid (fromIntegral . Lib.height . board $ state)
-                                            [#columnHomogeneous := True, #rowHomogeneous := True]
-                                            (mapWithIndex (viewCell $ board state) . cells . board $ state)
+            (pane defaultPaneProperties { resize = True, shrink = False} rightPane)
+        where rightPane = case gobstonesProgram state of
+                Running [] (Failure errorMessage) -> programFailed errorMessage (board state)
+                _ -> boardGrid (board state)
+
+programFailed :: String -> Board -> Widget event
+programFailed errorMessage board =
+  container Box [#orientation := Gtk.OrientationVertical]
+          [ BoxChild defaultBoxChildProperties
+            $ widget Label [#label := pack errorMessage, classes ["failure", "title"]],
+            BoxChild defaultBoxChildProperties { expand = True, fill = True } $ boardGrid board
+          ]
+
+boardGrid :: Board -> Widget event
+boardGrid board = toGrid (fromIntegral . Lib.height $ board)
+                          [#columnHomogeneous := True, #rowHomogeneous := True]
+                          (mapWithIndex (viewCell board) . cells $ board)
 
 mapWithIndex :: (Int -> a -> b) -> [a] -> [b]
 mapWithIndex f = zipWith f [0..]
 
+isParseFailed state = case gobstonesProgram state of
+  ParseFailed -> True
+  _ -> False
+
 loadProgramWidget :: State -> Widget Event
 loadProgramWidget state = container Box [#orientation := Gtk.OrientationVertical]
-          [ BoxChild defaultBoxChildProperties { expand = True, fill = True }
-            $ fileNameLabel state
-          , BoxChild defaultBoxChildProperties { padding = 10 } $ widget
+          [ BoxChild defaultBoxChildProperties { padding = 10 } $ widget
               Gtk.FileChooserButton
               [ onM #selectionChanged
                     (fmap FileSelectionChanged . Gtk.fileChooserGetFilename)
               ]
-          , BoxChild defaultBoxChildProperties { padding = 10 } $ widget
+          ,
+            BoxChild defaultBoxChildProperties { expand = True, fill = True }
+            $ textArea [#monospace := True, classes $ "sourceCode" : ["parseError" | isParseFailed state ]] (TextViewProperties (pack $ code state))
+          ,  BoxChild defaultBoxChildProperties { padding = 10 } $ widget
             Button
             [ #label := "Correr"
             , #tooltipText := "Correr programa"
             , on #clicked RunProgram
             ]
+          ,  BoxChild defaultBoxChildProperties { padding = 10 } $ widget
+            Button
+            [ #label := "Resetear"
+            , #tooltipText := "Resetear tablero"
+            , on #clicked ResetBoard
+            ]
           ]
+
+leftPanelText :: State -> Text
+leftPanelText state = case gobstonesProgram state of
+  NotLoaded filePath -> maybe "Cargá un programa de gobstones." pack filePath
+  Ready sourceCode -> pack sourceCode
+  Running _ _ -> ""
+  ParseFailed -> ""
 
 toGrid :: GHC.Int.Int32 -> Vector (Attribute Grid event) -> [Widget event] -> Widget event
 toGrid columns gridProperties widgets =
@@ -117,7 +139,7 @@ toGrid columns gridProperties widgets =
 
 viewCell :: Board -> Int -> Cell -> Widget event
 viewCell board idx cell =
-  toGrid 2 [classes $ "ballsCell" : ["currentCell" | currentCell board == idx]] .
+  toGrid 2 [classes $ "ballsCell" : ["currentCell" | currentCellIdx board == idx]] .
   map (\(name, amount) -> ballWithText name (show . amount $ cell)) .
   filter (\(_, amount) -> amount cell > 0) $ [
     ("black", black),
@@ -141,29 +163,37 @@ update' state (FileSelectionChanged fileName) =
         programSourceCode <- readFile filePath
         pure $ GobstonesProgramLoaded programSourceCode
 update' state (GobstonesProgramLoaded programSourceCode) =
-  Transition (state { gobstonesProgram = Ready programSourceCode })
-             (pure Nothing)
-update' state RunProgram = let maybeProgram = case gobstonesProgram state of
-                                      NotLoaded _ -> Nothing
-                                      Ready sourceCode -> parsearPrograma sourceCode
-                               boardStates = case maybeProgram of
-                                      Just program -> case program (board state) of
-                                        Left _ -> []
-                                        Right newBoard -> allBoardStates newBoard
-                                      Nothing -> []
+  Transition (state {
+      gobstonesProgram = Ready programSourceCode
+    }) (pure . Just . CodeChanged $ programSourceCode)
+update' state RunProgram = let maybeProgram = parsearPrograma (code state)
+                               (boardStates, finalResult) = case maybeProgram of
+                                      Just program -> case program ((board state) { previous = Nothing }) of
+                                        Left (errorMessage, failedBoard) ->
+                                          (allBoardStates failedBoard, Failure errorMessage)
+                                        Right newBoard ->
+                                          (allBoardStates newBoard, Success)
+                                      Nothing -> ([], Success)
                             in
-  Transition (state { gobstonesProgram = Running boardStates }) (pure . Just $ RunStep)
+  case maybeProgram of
+    Just _ -> Transition (state { gobstonesProgram = Running boardStates finalResult }) (pure . Just $ RunStep)
+    Nothing -> Transition (state { gobstonesProgram = ParseFailed}) (threadDelay 500000 >> pure (Just BackToNotLoaded))
 update' state RunStep = Transition (case gobstonesProgram state of
-                          Running (nextBoard : rest) -> state {
+                          Running (nextBoard : rest) finalResult -> state {
                             board = nextBoard,
-                            gobstonesProgram = Running rest
+                            gobstonesProgram = Running rest finalResult
                           }
                           _ -> state) (
                             case gobstonesProgram state of
-                              Running (_:_) -> threadDelay 1000000 >> pure (Just RunStep)
+                              Running (_:_) _ -> threadDelay 300000 >> pure (Just RunStep)
                               _ -> pure Nothing
                           )
-
+update' state (CodeChanged newCode) =
+  Transition (state { code = newCode }) (pure Nothing)
+update' state BackToNotLoaded =
+  Transition (state { gobstonesProgram = NotLoaded Nothing }) (pure Nothing)
+update' state ResetBoard =
+  Transition (state { board = initialBoard }) (pure Nothing)
 
 -- update' state ButtonClicked = _wd
 styles = mconcat [
@@ -173,11 +203,55 @@ styles = mconcat [
   "font-size: 30px; ",
   "border: 5px inset black; ",
   "background-color: white; ",
+  "transition-property: background-color; ",
+  "transition-duration: 0.2s; ",
   "}",
   "\n",
   ".currentCell {",
   "background-color: rgb(173,216,230); ",
-  " }"
+  " }",
+  "\n",
+  ".failure { ",
+  "color: red; ",
+  "font-size: 30px; ",
+  "}",
+  "\n",
+  ".sourceCode { ",
+  "font-size: 30px; ",
+  "}",
+  "\n",
+  "textview.view.parseError {",
+  "padding-left: 0px; ",
+  "animation-name: horizontal-shaking; ",
+  "animation-duration: 0.5s;", 
+  "animation-timing-function: linear;",
+  "animation-iteration-count: 1;",
+  "}",
+  "\n",
+  "@keyframes horizontal-shaking {",
+  "\n",
+  "0% { padding-left: 0px }","\n",
+  "15% { padding-left: 30px }","\n",
+  "30% { padding-left: 0px }","\n",
+  "45% { padding-left: 20px }","\n",
+  "60% { padding-left: 0px }","\n",
+  "75% { padding-left: 10px }","\n",
+  "100% { padding-left: 0px }","\n",
+ "}","\n",
+ "textview.view.parseError text {",
+  "animation-name: horizontal-shaking-text; ",
+  "animation-duration: 0.5s;", 
+  "animation-timing-function: linear;",
+  "animation-iteration-count: 1;",
+  "}",
+  "\n",
+  "@keyframes horizontal-shaking-text {",
+  "\n",
+  "0% { color: black }","\n",
+  "15% { color: red }","\n",
+  "85% { color: red }","\n",
+  "100% { color: black }","\n",
+ "}","\n"
   ]
 
 ballWithText :: String -> String -> Widget event
@@ -205,7 +279,64 @@ main = do
                       , update       = update'
                       , inputs       = []
                       , initialState = State {
-                          board = newBoard 3,
+                          code = "",
+                          board = initialBoard,
                           gobstonesProgram = NotLoaded { filePath = Nothing }
                         }
                       }
+
+initialBoard :: Board
+initialBoard = newBoard 3
+
+data TextViewProperties = TextViewProperties { content :: Text } deriving Eq
+
+data TextViewState = TextViewState { textBuffer :: Gtk.TextBuffer }
+
+textArea :: Vector (Attribute Gtk.TextView Event) -> TextViewProperties -> Widget Event
+textArea customAttributes customParams = Widget
+  (CustomWidget { customWidget
+                , customCreate
+                , customPatch
+                , customSubscribe
+                , customAttributes
+                , customParams
+                }
+  )
+ where
+  -- The constructor for the underlying GTK widget.
+  customWidget = Gtk.TextView
+  -- A function that creates a widget (of the same type as
+  -- customWidget), used on first render and on 'CustomReplace'. It's
+  -- also returning our internal state, a reference to the spin button
+  -- widget.
+  customCreate :: TextViewProperties -> IO (Gtk.TextView, TextViewState)
+  customCreate (TextViewProperties text) = do
+    buffer <- Gtk.new Gtk.TextBuffer [#text Gtk.:= text]
+    view <- Gtk.new Gtk.TextView [#buffer Gtk.:= buffer]
+
+    return (view, TextViewState buffer)
+
+  customPatch :: TextViewProperties -> TextViewProperties -> TextViewState -> CustomPatch Gtk.TextView TextViewState
+  customPatch old new state
+    | old == new = CustomKeep
+    | otherwise = CustomModify $ \_textView -> do
+                      let buffer = textBuffer state
+                      cursorOffset <- Gtk.get buffer #cursorPosition
+                      Gtk.setTextBufferText (textBuffer state) (content new)
+                      iterator <- Gtk.textBufferGetStartIter buffer 
+                      Gtk.textIterSetOffset iterator cursorOffset
+                      Gtk.textBufferPlaceCursor buffer iterator
+
+                      pure state
+
+  customSubscribe :: TextViewProperties -> TextViewState -> Gtk.TextView -> (Event -> IO ()) -> IO Subscription
+  customSubscribe _params state _box callback = do
+    let buffer = textBuffer state
+    handler <- Gtk.on buffer #changed $ do
+      newText <- Gtk.getTextBufferText buffer
+      case newText of
+        Just text -> callback $ CodeChanged (unpack text)
+        Nothing -> pure ()
+
+    pure $ fromCancellation (GI.signalHandlerDisconnect buffer handler)
+

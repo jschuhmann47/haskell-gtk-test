@@ -44,11 +44,12 @@ executables:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
-    - -main-is Hello
+    - -main-is Main
     dependencies:
     - menu
     - vector
     - gi-gtk 
+    - gi-gobject
     - gi-gdk
     - gi-gtk-declarative
     - gi-gtk-declarative-app-simple

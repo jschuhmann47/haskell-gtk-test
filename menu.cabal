@@ -42,10 +42,11 @@ executable menu-exe
       Paths_menu
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N -main-is Hello
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N -main-is Main
   build-depends:
       base >=4.7 && <5
     , gi-gdk
+    , gi-gobject
     , gi-gtk
     , gi-gtk-declarative
     , gi-gtk-declarative-app-simple
